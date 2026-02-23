@@ -45,22 +45,15 @@ SLACK_APP_TOKEN = "xapp-your-app-token"
 
 ### 3. Slack App Setup
 
-Create a Slack app at https://api.slack.com/apps with:
+You need to create a Slack app and get two tokens (`SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`).
 
-**Scopes:**
-- `app_mentions:read`, `chat:write`, `commands`, `im:history`, `im:read`, `im:write`, `users:read`
+📖 **Full setup guide:** [create_slackbot.md](create_slackbot.md)
 
-**Events:**
-- `app_mention`, `message.im`
-
-**Socket Mode:** Enabled with `connections:write` scope
-
-**Slash Commands:**
-- `/devlake-create-project` - Create new project
-- `/devlake-list-projects` - List projects (paginated)
-- `/devlake-list-all` - List all projects
-- `/devlake-requirements` - Show token requirements
-- `/devlake-help` - Show help
+The guide walks you through:
+- Creating the Slack app with correct scopes and permissions
+- Enabling Socket Mode and getting your tokens
+- Setting up slash commands and event subscriptions
+- Enabling the Messages Tab for DMs
 
 ### 4. Run
 
