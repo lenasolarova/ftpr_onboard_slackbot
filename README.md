@@ -11,6 +11,127 @@ This bot enables users to set up DevLake data collection pipelines for GitHub re
 https://konflux-devlake-ui-konflux-devlake.apps.rosa.kflux-c-prd-i01.7hyu.p3.openshiftapps.com
 ```
 
+## Installation
+
+### From Source
+
+```bash
+# Clone the repository
+git clone <repo-url> ftpr-slack-bot
+cd ftpr-slack-bot
+
+# Create virtual environment
+python3 -m venv ~/.local/share/ftpr-slack-bot
+source ~/.local/share/ftpr-slack-bot/bin/activate
+
+# Install dependencies and package
+pip install -r requirements.txt
+pip install .
+```
+
+### Configuration
+
+Create configuration file:
+```bash
+mkdir -p ~/.config
+cp etc/config/ftpr_slack_bot.toml ~/.config/
+```
+
+Edit `~/.config/ftpr_slack_bot.toml` with your tokens:
+```toml
+[default]
+DEVLAKE_URL = "https://konflux-devlake-ui-konflux-devlake.apps.rosa.kflux-c-prd-i01.7hyu.p3.openshiftapps.com"
+SLACK_BOT_TOKEN = "xoxb-your-bot-token"
+SLACK_APP_TOKEN = "xapp-your-app-token"
+```
+
+Alternatively, use environment variables:
+```bash
+export SLACK_BOT_TOKEN="xoxb-your-bot-token"
+export SLACK_APP_TOKEN="xapp-your-app-token"
+export DEVLAKE_URL="https://konflux-devlake-ui-konflux-devlake.apps.rosa.kflux-c-prd-i01.7hyu.p3.openshiftapps.com"
+```
+
+### Kubernetes Deployment
+
+For production deployment in Kubernetes:
+
+```bash
+# Update secrets in etc/kubernetes/deployment.yaml
+# Then apply:
+kubectl apply -f etc/kubernetes/deployment.yaml
+```
+
+Or build and deploy with a container:
+
+```bash
+# Build container
+podman build -t quay.io/ftpr/slack-bot:latest .
+
+# Push to registry
+podman push quay.io/ftpr/slack-bot:latest
+
+# Deploy to Kubernetes
+kubectl apply -f etc/kubernetes/deployment.yaml
+```
+
+## Usage
+
+### Running the Bot
+
+**Local development:**
+```bash
+# Activate virtual environment
+source ~/.local/share/ftpr-slack-bot/bin/activate
+
+# Run bot
+ftpr-slack-bot
+
+# With custom config
+ftpr-slack-bot --config_file /path/to/config.toml
+```
+
+**As a service (Kubernetes):**
+The bot runs as a deployment in the cluster and automatically reconnects if disconnected.
+
+### Slack Commands
+
+**`/devlake-create-project`**
+Opens a modal to create a new DevLake project. Collects:
+- Project name
+- GitHub repository (owner/repo format)
+- GitHub Personal Access Token
+- Collection schedule (daily, weekly, etc.)
+
+**`/devlake-list-projects`**
+Lists existing DevLake projects (shows up to 10 most recent).
+
+**`/devlake-help`**
+Shows help message with available commands.
+
+## Package Structure
+
+```
+ftpr_slack_bot/
+├── ftpr_slack_bot/
+│   ├── __init__.py
+│   ├── slack_bot.py           # Main Slack bot with commands
+│   └── common/
+│       ├── __init__.py
+│       ├── config.py           # Configuration loader (TOML)
+│       └── devlake_api.py     # DevLake API client
+├── etc/
+│   ├── config/
+│   │   └── ftpr_slack_bot.toml  # Config template
+│   └── kubernetes/
+│       └── deployment.yaml      # K8s manifests
+├── setup.py                     # Package setup (pbr)
+├── setup.cfg                    # Package metadata
+├── requirements.txt             # Python dependencies
+├── Dockerfile                   # Container build
+└── README.md                    # This file
+```
+
 ## Architecture
 
 ### User Flow

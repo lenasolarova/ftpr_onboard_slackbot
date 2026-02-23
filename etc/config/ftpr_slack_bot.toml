@@ -1,0 +1,16 @@
+[default]
+# DevLake instance URL
+DEVLAKE_URL = "https://konflux-devlake-ui-konflux-devlake.apps.rosa.kflux-c-prd-i01.7hyu.p3.openshiftapps.com"
+
+# Slack bot tokens (get from https://api.slack.com/apps)
+# These can also be set via environment variables which take priority
+SLACK_BOT_TOKEN = ""
+SLACK_APP_TOKEN = ""
+
+# Optional: Allowed channel for bot interactions (channel ID)
+# Leave empty to allow all channels + DMs
+# Example: "C12345678" to restrict to one channel only
+ALLOWED_CHANNEL = ""
+
+# Optional: Default cron schedule
+DEFAULT_SCHEDULE = "daily"

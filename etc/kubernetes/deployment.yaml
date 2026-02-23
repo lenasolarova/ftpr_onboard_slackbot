@@ -1,0 +1,108 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ftpr-slack-bot
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: slack-credentials
+  namespace: ftpr-slack-bot
+type: Opaque
+stringData:
+  # Update these with your actual tokens
+  SLACK_BOT_TOKEN: "xoxb-your-bot-token"
+  SLACK_APP_TOKEN: "xapp-your-app-token"
+  DEVLAKE_URL: "https://konflux-devlake-ui-konflux-devlake.apps.rosa.kflux-c-prd-i01.7hyu.p3.openshiftapps.com"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ftpr-slack-bot
+  namespace: ftpr-slack-bot
+  labels:
+    app: ftpr-slack-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ftpr-slack-bot
+  template:
+    metadata:
+      labels:
+        app: ftpr-slack-bot
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: slack-bot
+        image: quay.io/ftpr/slack-bot:latest  # Update with your image
+        imagePullPolicy: Always
+        env:
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: slack-credentials
+              key: SLACK_BOT_TOKEN
+        - name: SLACK_APP_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: slack-credentials
+              key: SLACK_APP_TOKEN
+        - name: DEVLAKE_URL
+          valueFrom:
+            secretKeyRef:
+              name: slack-credentials
+              key: DEVLAKE_URL
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ftpr-slack-bot-egress
+  namespace: ftpr-slack-bot
+spec:
+  podSelector:
+    matchLabels:
+      app: ftpr-slack-bot
+  policyTypes:
+  - Egress
+  egress:
+  # Allow to Slack API
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53

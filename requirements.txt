@@ -5,11 +5,17 @@ slack-sdk>=3.23.0
 # HTTP Client
 requests>=2.31.0
 
+# Configuration
+toml>=0.10.2
+
 # Environment Variables
 python-dotenv>=1.0.0
 
 # Logging
 structlog>=23.2.0
+
+# Packaging
+pbr>=5.7.0
 
 # Optional: Production server
 gunicorn>=21.2.0
