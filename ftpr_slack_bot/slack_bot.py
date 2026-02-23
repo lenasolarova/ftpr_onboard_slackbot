@@ -108,30 +108,79 @@ def get_create_project_modal():
                     "placeholder": {"type": "plain_text", "text": "my-project"},
                 }
             },
+            {"type": "divider"},
             {
-                "type": "input",
-                "block_id": "repo_block",
-                "label": {"type": "plain_text", "text": "GitHub Repository"},
-                "element": {
-                    "type": "plain_text_input",
-                    "action_id": "repo_input",
-                    "placeholder": {"type": "plain_text", "text": "owner/repo-name"},
-                }
+                "type": "header",
+                "text": {"type": "plain_text", "text": "🐙 GitHub"}
             },
             {
                 "type": "input",
-                "block_id": "token_block",
-                "label": {"type": "plain_text", "text": "GitHub/GitLab Personal Access Token"},
+                "block_id": "github_token_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "GitHub Personal Access Token"},
                 "hint": {
                     "type": "plain_text",
-                    "text": "⚠️ Requires specific scopes! Use /devlake-requirements for details. Token sent directly to DevLake (not stored)."
+                    "text": "Use /devlake-requirements for scopes. Optional if using GitLab only."
                 },
                 "element": {
                     "type": "plain_text_input",
-                    "action_id": "token_input",
-                    "placeholder": {"type": "plain_text", "text": "ghp_**** or glpat-****"},
+                    "action_id": "github_token_input",
+                    "placeholder": {"type": "plain_text", "text": "ghp_****"},
                 }
             },
+            {
+                "type": "input",
+                "block_id": "github_repos_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "GitHub Repositories"},
+                "hint": {
+                    "type": "plain_text",
+                    "text": "One per line: owner/repo-name"
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "github_repos_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "kubernetes/kubernetes\nowner/repo1\nowner/repo2"},
+                }
+            },
+            {"type": "divider"},
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "🦊 GitLab"}
+            },
+            {
+                "type": "input",
+                "block_id": "gitlab_token_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "GitLab Personal Access Token"},
+                "hint": {
+                    "type": "plain_text",
+                    "text": "Use /devlake-requirements for scopes. Optional if using GitHub only."
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "gitlab_token_input",
+                    "placeholder": {"type": "plain_text", "text": "glpat-****"},
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "gitlab_repos_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "GitLab Projects"},
+                "hint": {
+                    "type": "plain_text",
+                    "text": "One per line: group/project-name"
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "gitlab_repos_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "gitlab-org/gitlab\ngroup/project1\ngroup/project2"},
+                }
+            },
+            {"type": "divider"},
             {
                 "type": "input",
                 "block_id": "schedule_block",
@@ -181,42 +230,77 @@ def open_create_modal(ack, body, client):
 @app.view("create_project_modal")
 def handle_create_project(ack, body, client, view):
     """Handle project creation modal submission."""
-    # Acknowledge immediately
-    ack()
-
     # Extract values from modal
     values = view["state"]["values"]
 
+    # Parse GitHub data
+    github_token = values["github_token_block"]["github_token_input"].get("value")
+    github_repos_text = values["github_repos_block"]["github_repos_input"].get("value")
+    github_repos = [r.strip() for r in github_repos_text.split("\n") if r.strip()] if github_repos_text else []
+
+    # Parse GitLab data
+    gitlab_token = values["gitlab_token_block"]["gitlab_token_input"].get("value")
+    gitlab_repos_text = values["gitlab_repos_block"]["gitlab_repos_input"].get("value")
+    gitlab_repos = [r.strip() for r in gitlab_repos_text.split("\n") if r.strip()] if gitlab_repos_text else []
+
+    # Validation: at least one platform must have both token and repos
+    errors = {}
+    if not github_repos and not gitlab_repos:
+        errors["github_repos_block"] = "At least one GitHub or GitLab repository is required"
+        errors["gitlab_repos_block"] = "At least one GitHub or GitLab repository is required"
+    if github_repos and not github_token:
+        errors["github_token_block"] = "GitHub token required when repositories are provided"
+    if gitlab_repos and not gitlab_token:
+        errors["gitlab_token_block"] = "GitLab token required when projects are provided"
+
+    if errors:
+        ack(response_action="errors", errors=errors)
+        return
+
+    # Acknowledge after validation
+    ack()
+
     # Safe data (can be logged)
+    project_name = values["project_name_block"]["project_name_input"]["value"]
+    schedule = values["schedule_block"]["schedule_select"]["selected_option"]["value"]
+
     safe_data = {
-        "project": values["project_name_block"]["project_name_input"]["value"],
-        "repo": values["repo_block"]["repo_input"]["value"],
-        "schedule": values["schedule_block"]["schedule_select"]["selected_option"]["value"]
+        "project": project_name,
+        "github_repos": github_repos,
+        "gitlab_repos": gitlab_repos,
+        "schedule": schedule
     }
 
     logger.info(f"Creating DevLake project: {safe_data}")
 
-    # Sensitive data (NEVER logged)
-    github_token = values["token_block"]["token_input"]["value"]
-
     user_id = body["user"]["id"]
 
     # Send "working on it" message
+    repo_count = len(github_repos) + len(gitlab_repos)
     client.chat_postMessage(
         channel=user_id,
-        text=f"⏳ Creating project '{safe_data['project']}'..."
+        text=f"⏳ Creating project '{project_name}' with {repo_count} repositor{'y' if repo_count == 1 else 'ies'}..."
     )
 
     try:
-        # Create full project (token used here then garbage collected)
-        result = devlake.create_full_project(
-            project_name=safe_data["project"],
-            repo_full_name=safe_data["repo"],
+        # Create project with both GitHub and GitLab repos (tokens used here then garbage collected)
+        result = devlake.create_multi_platform_project(
+            project_name=project_name,
+            github_repos=github_repos,
             github_token=github_token,  # ⚠️ In-memory only, never stored
-            cron_config=CRON_SCHEDULES[safe_data["schedule"]]
+            gitlab_repos=gitlab_repos,
+            gitlab_token=gitlab_token,  # ⚠️ In-memory only, never stored
+            cron_config=CRON_SCHEDULES[schedule]
         )
 
-        # Token is now out of scope and will be garbage collected
+        # Tokens are now out of scope and will be garbage collected
+
+        # Build repo list for success message
+        repo_list = []
+        if github_repos:
+            repo_list.append(f"🐙 *GitHub:* {', '.join(github_repos)}")
+        if gitlab_repos:
+            repo_list.append(f"🦊 *GitLab:* {', '.join(gitlab_repos)}")
 
         # Success message
         client.chat_postMessage(
@@ -224,8 +308,8 @@ def handle_create_project(ack, body, client, view):
             text=f"✅ *Project '{result['project']}' created successfully!*\n\n"
                  f"📊 *Dashboard:* {result['dashboard_url']}\n"
                  f"🔄 *First collection started* (Pipeline ID: {result['pipeline_id']})\n"
-                 f"📅 *Schedule:* {safe_data['schedule']}\n"
-                 f"🔗 *Repository:* {safe_data['repo']}"
+                 f"📅 *Schedule:* {schedule}\n"
+                 f"🔗 *Repositories:*\n" + "\n".join(repo_list)
         )
 
     except DevLakeAPIError as e:
@@ -237,8 +321,8 @@ def handle_create_project(ack, body, client, view):
             text=f"❌ *Failed to create project*\n\n"
                  f"Error: {str(e)}\n\n"
                  f"Please check:\n"
-                 f"• GitHub token is valid and has repo access\n"
-                 f"• Repository name is correct (owner/repo)\n"
+                 f"• Tokens are valid and have required scopes\n"
+                 f"• Repository names are correct (owner/repo)\n"
                  f"• Project name is unique"
         )
 
