@@ -1,0 +1,19 @@
+# Slack Bot Framework
+slack-bolt>=1.18.0
+slack-sdk>=3.23.0
+
+# HTTP Client
+requests>=2.31.0
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# Logging
+structlog>=23.2.0
+
+# Optional: Production server
+gunicorn>=21.2.0
+
+# Optional: Testing
+pytest>=7.4.3
+pytest-mock>=3.12.0
