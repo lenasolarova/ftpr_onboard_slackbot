@@ -77,7 +77,10 @@ CONF = bot_config.CONF
 app = App(token=CONF['default'].get("SLACK_BOT_TOKEN"))
 
 # Initialize DevLake API client
-devlake = DevLakeAPI(base_url=CONF['default'].get("DEVLAKE_URL"))
+devlake = DevLakeAPI(
+    base_url=CONF['default'].get("DEVLAKE_URL"),
+    api_token=CONF['default'].get("DEVLAKE_API_TOKEN")
+)
 
 
 # Cron schedule options
@@ -102,6 +105,10 @@ def get_create_project_modal():
                 "type": "input",
                 "block_id": "project_name_block",
                 "label": {"type": "plain_text", "text": "Project Name"},
+                "hint": {
+                    "type": "plain_text",
+                    "text": "💡 Tip: Use an existing project name to add a new connection (e.g., add GitLab to a GitHub-only project)"
+                },
                 "element": {
                     "type": "plain_text_input",
                     "action_id": "project_name_input",
@@ -219,11 +226,15 @@ def get_create_project_modal():
 
 @app.command("/devlake-create-project")
 def open_create_modal(ack, body, client):
-    """Open modal to create a new DevLake project."""
+    """Open modal to create a new DevLake project from scratch."""
     ack()
+
+    modal = get_create_project_modal()
+    # Store channel_id in private_metadata so we can post back to the channel
+    modal["private_metadata"] = body["channel_id"]
     client.views_open(
         trigger_id=body["trigger_id"],
-        view=get_create_project_modal()
+        view=modal
     )
 
 
@@ -243,7 +254,7 @@ def handle_create_project(ack, body, client, view):
     gitlab_repos_text = values["gitlab_repos_block"]["gitlab_repos_input"].get("value")
     gitlab_repos = [r.strip() for r in gitlab_repos_text.split("\n") if r.strip()] if gitlab_repos_text else []
 
-    # Validation: at least one platform must have both token and repos
+    # Validation
     errors = {}
     if not github_repos and not gitlab_repos:
         errors["github_repos_block"] = "At least one GitHub or GitLab repository is required"
@@ -274,11 +285,13 @@ def handle_create_project(ack, body, client, view):
     logger.info(f"Creating DevLake project: {safe_data}")
 
     user_id = body["user"]["id"]
+    channel_id = view.get("private_metadata", user_id)  # Fallback to user DM if no channel
 
-    # Send "working on it" message
+    # Send ephemeral "working on it" message to user in channel
     repo_count = len(github_repos) + len(gitlab_repos)
-    client.chat_postMessage(
-        channel=user_id,
+    client.chat_postEphemeral(
+        channel=channel_id,
+        user=user_id,
         text=f"⏳ Creating project '{project_name}' with {repo_count} repositor{'y' if repo_count == 1 else 'ies'}..."
     )
 
@@ -302,9 +315,10 @@ def handle_create_project(ack, body, client, view):
         if gitlab_repos:
             repo_list.append(f"🦊 *GitLab:* {', '.join(gitlab_repos)}")
 
-        # Success message
-        client.chat_postMessage(
-            channel=user_id,
+        # Ephemeral success message to user with details
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
             text=f"✅ *Project '{result['project']}' created successfully!*\n\n"
                  f"📊 *Dashboard:* {result['dashboard_url']}\n"
                  f"🔄 *First collection started* (Pipeline ID: {result['pipeline_id']})\n"
@@ -312,12 +326,19 @@ def handle_create_project(ack, body, client, view):
                  f"🔗 *Repositories:*\n" + "\n".join(repo_list)
         )
 
+        # Public announcement to channel
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"🎉 *{result['project']}* has been onboarded to FTPR metrics!"
+        )
+
     except DevLakeAPIError as e:
         # DO NOT log token or full error details that might contain token
         logger.error(f"Failed to create project: {str(e)}")
 
-        client.chat_postMessage(
-            channel=user_id,
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
             text=f"❌ *Failed to create project*\n\n"
                  f"Error: {str(e)}\n\n"
                  f"Please check:\n"
@@ -327,28 +348,271 @@ def handle_create_project(ack, body, client, view):
         )
 
 
-@app.command("/devlake-list-projects")
-def list_projects(ack, say, command):
-    """List existing DevLake projects with pagination."""
-    ack("Fetching projects...")
+@app.command("/devlake-add-repos")
+def open_add_repos_modal(ack, body, client):
+    """Open modal to add repos/projects to an existing connection."""
+    ack()
+
+    # Fetch connections and projects in parallel to stay within Slack's 3s trigger_id window
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            f_github = executor.submit(devlake.get_connections, plugin="github")
+            f_gitlab = executor.submit(devlake.get_connections, plugin="gitlab")
+            f_projects = executor.submit(devlake.get_projects, page_size=100)
+            github_conns = f_github.result()
+            gitlab_conns = f_gitlab.result()
+            projects = f_projects.result()
+    except Exception as e:
+        logger.error(f"Failed to fetch connections/projects: {e}")
+        client.chat_postEphemeral(
+            channel=body["channel_id"],
+            user=body["user_id"],
+            text=f"❌ Failed to fetch connections/projects: {str(e)}"
+        )
+        return
+
+    # Build connection options (combine GitHub and GitLab)
+    connection_options = []
+    if isinstance(github_conns, list):
+        for conn in github_conns:
+            connection_options.append({
+                "text": {"type": "plain_text", "text": f"🐙 {conn.get('name', 'Unknown')} (ID: {conn.get('id')})"},
+                "value": f"github:{conn.get('id')}"
+            })
+    if isinstance(gitlab_conns, list):
+        for conn in gitlab_conns:
+            connection_options.append({
+                "text": {"type": "plain_text", "text": f"🦊 {conn.get('name', 'Unknown')} (ID: {conn.get('id')})"},
+                "value": f"gitlab:{conn.get('id')}"
+            })
+
+    if not connection_options:
+        client.chat_postEphemeral(
+            channel=body["channel_id"],
+            user=body["user_id"],
+            text="❌ No connections found. Create a project first using `/devlake-create-project`"
+        )
+        return
+
+    # Build project options
+    project_options = []
+    if isinstance(projects, dict) and 'projects' in projects:
+        for proj in projects['projects']:
+            project_options.append({
+                "text": {"type": "plain_text", "text": proj.get('name', 'Unknown')},
+                "value": proj.get('name', '')
+            })
+
+    if not project_options:
+        client.chat_postEphemeral(
+            channel=body["channel_id"],
+            user=body["user_id"],
+            text="❌ No projects found. Create a project first using `/devlake-create-project`"
+        )
+        return
+
+    modal = {
+        "type": "modal",
+        "callback_id": "add_repos_modal",
+        "title": {"type": "plain_text", "text": "Add Repos to Project"},
+        "submit": {"type": "plain_text", "text": "Add"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "project_block",
+                "label": {"type": "plain_text", "text": "Select Project"},
+                "hint": {
+                    "type": "plain_text",
+                    "text": "The project that will collect data from these repos"
+                },
+                "element": {
+                    "type": "static_select",
+                    "action_id": "project_select",
+                    "placeholder": {"type": "plain_text", "text": "Choose a project"},
+                    "options": project_options
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "connection_block",
+                "label": {"type": "plain_text", "text": "Select Connection"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": "connection_select",
+                    "placeholder": {"type": "plain_text", "text": "Choose a connection"},
+                    "options": connection_options
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "repos_block",
+                "label": {"type": "plain_text", "text": "Repositories/Projects"},
+                "hint": {
+                    "type": "plain_text",
+                    "text": "One per line: owner/repo for GitHub or group/project for GitLab"
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "repos_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "owner/repo1\nowner/repo2\ngroup/project1"},
+                }
+            }
+        ]
+    }
+
+    modal["private_metadata"] = body["channel_id"]
+    client.views_open(trigger_id=body["trigger_id"], view=modal)
+
+
+@app.view("add_repos_modal")
+def handle_add_repos(ack, body, client, view):
+    """Handle adding repos to existing connection and linking to project."""
+    ack()
+
+    values = view["state"]["values"]
+    project_name = values["project_block"]["project_select"]["selected_option"]["value"]
+    connection_value = values["connection_block"]["connection_select"]["selected_option"]["value"]
+    repos_text = values["repos_block"]["repos_input"]["value"]
+    repos = [r.strip() for r in repos_text.split("\n") if r.strip()]
+
+    # Parse connection (format: "github:123" or "gitlab:456")
+    plugin, conn_id = connection_value.split(":")
+    conn_id = int(conn_id)
+
+    user_id = body["user"]["id"]
+    channel_id = view.get("private_metadata", user_id)
+
+    client.chat_postEphemeral(
+        channel=channel_id,
+        user=user_id,
+        text=f"⏳ Adding {len(repos)} repo{'s' if len(repos) > 1 else ''} to project '{project_name}'..."
+    )
 
     try:
-        send_project_list(say, command['user_id'], page=1)
+        # Get connection info for better naming
+        connections = devlake.get_connections(plugin=plugin)
+        conn_name = "connection"
+        if isinstance(connections, list):
+            for c in connections:
+                if c.get('id') == conn_id:
+                    conn_name = c.get('name', f'connection-{conn_id}')
+                    break
+
+        # Get existing scope configs or create new one
+        existing_configs = devlake.get_scope_configs(conn_id, plugin)
+
+        if existing_configs and len(existing_configs) > 0:
+            # Reuse first existing scope config
+            scope_config_id = existing_configs[0]['id']
+            logger.info(f"Reusing existing scope config ID: {scope_config_id}")
+        else:
+            # Create new scope config with connection name
+            scope_config = devlake.create_scope_config(
+                connection_id=conn_id,
+                name=conn_name,
+                plugin=plugin
+            )
+            scope_config_id = scope_config['id']
+            logger.info(f"Created new scope config ID: {scope_config_id}")
+
+        # Add scopes and collect their IDs
+        added_repos = []
+        failed_repos = []
+        added_scope_ids = []
+
+        for repo in repos:
+            try:
+                if plugin == "github":
+                    result = devlake.add_scope(conn_id, repo, scope_config_id)
+                    scope_id_key = 'githubId'
+                else:  # gitlab
+                    result = devlake.add_gitlab_scope(conn_id, repo, scope_config_id)
+                    scope_id_key = 'gitlabId'
+
+                logger.info(f"Add scope result for {repo}: {result}")
+
+                # Check if scope was actually added
+                if not result.get('scopes') or len(result['scopes']) == 0:
+                    failed_repos.append(f"{repo} (not found or no access)")
+                else:
+                    added_repos.append(repo)
+                    # Extract scope ID
+                    scope_data = result['scopes'][0].get('scope', result['scopes'][0])
+                    scope_id = scope_data.get(scope_id_key)
+                    if scope_id:
+                        added_scope_ids.append(str(scope_id))
+
+            except Exception as e:
+                logger.error(f"Failed to add {repo}: {str(e)}")
+                failed_repos.append(f"{repo} (error: {str(e)})")
+
+        # Link added scopes to project
+        if added_scope_ids:
+            try:
+                logger.info(f"Linking {len(added_scope_ids)} scopes to project '{project_name}'")
+                devlake.link_scopes_to_project(project_name, plugin, conn_id, added_scope_ids)
+            except Exception as e:
+                logger.error(f"Failed to link scopes to project: {str(e)}")
+                # Continue anyway - scopes are added to connection
+
+        # Build result message
+        msg = ""
+        if added_repos:
+            msg += f"✅ Successfully added {len(added_repos)} repo{'s' if len(added_repos) > 1 else ''} to project '{project_name}':\n• " + "\n• ".join(added_repos)
+        if failed_repos:
+            if msg:
+                msg += "\n\n"
+            msg += f"❌ Failed to add {len(failed_repos)} repo{'s' if len(failed_repos) > 1 else ''}:\n• " + "\n• ".join(failed_repos)
+            msg += "\n\n*Common reasons:*\n• Repo/project doesn't exist\n• Not accessible with this connection's token\n• Wrong repo path format (use owner/repo or group/project)"
+
+        if not added_repos and not failed_repos:
+            msg = "❌ No repos were processed. Please check your input."
+
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text=msg
+        )
+
     except DevLakeAPIError as e:
-        logger.error(f"Failed to list projects: {str(e)}")
-        say(
-            f"❌ Failed to fetch projects: {str(e)}",
-            channel=command['user_id']
+        logger.error(f"Failed to add repos: {str(e)}")
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text=f"❌ Failed to add repos: {str(e)}"
         )
 
 
-def send_project_list(say, channel, page=1):
-    """Send paginated project list with buttons."""
+@app.command("/devlake-list-projects")
+def list_projects(ack, client, command):
+    """List existing DevLake projects with pagination."""
+    ack()
+
+    try:
+        send_project_list(client, command['channel_id'], command['user_id'], page=1)
+    except DevLakeAPIError as e:
+        logger.error(f"Failed to list projects: {str(e)}")
+        client.chat_postEphemeral(
+            channel=command['channel_id'],
+            user=command['user_id'],
+            text=f"❌ Failed to fetch projects: {str(e)}"
+        )
+
+
+def send_project_list(client, channel_id, user_id, page=1):
+    """Send paginated project list with buttons (ephemeral to user)."""
     page_size = 10
     projects = devlake.get_projects(page=page, page_size=page_size)
 
     if not projects.get('projects'):
-        say("No projects found.", channel=channel)
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text="No projects found."
+        )
         return
 
     total = projects.get('count', 0)
@@ -410,26 +674,32 @@ def send_project_list(say, channel, page=1):
             "elements": buttons
         })
 
-    say(blocks=blocks, channel=channel, text=f"DevLake Projects ({start}-{end} of {total})")
+    client.chat_postEphemeral(
+        channel=channel_id,
+        user=user_id,
+        blocks=blocks,
+        text=f"DevLake Projects ({start}-{end} of {total})"
+    )
 
 
 @app.action(re.compile("^projects_(next|prev)_.*"))
-def handle_project_pagination(ack, body, say):
+def handle_project_pagination(ack, body, client):
     """Handle 'Show More' and 'Previous' button clicks."""
     ack()
 
     action = body['actions'][0]
     page = int(action['value'])
-    channel = body['user']['id']
+    channel_id = body['channel']['id']
+    user_id = body['user']['id']
 
     # Send the requested page
-    send_project_list(say, channel, page=page)
+    send_project_list(client, channel_id, user_id, page=page)
 
 
 @app.command("/devlake-list-all")
-def list_all_projects(ack, say, command):
+def list_all_projects(ack, client, command):
     """List all DevLake projects (fetches all pages)."""
-    ack("Fetching all projects... this may take a moment")
+    ack()
 
     try:
         all_projects = []
@@ -454,13 +724,18 @@ def list_all_projects(ack, say, command):
         else:
             msg = "No projects found."
 
-        say(msg, channel=command['user_id'])
+        client.chat_postEphemeral(
+            channel=command['channel_id'],
+            user=command['user_id'],
+            text=msg
+        )
 
     except DevLakeAPIError as e:
         logger.error(f"Failed to list all projects: {str(e)}")
-        say(
-            f"❌ Failed to fetch projects: {str(e)}",
-            channel=command['user_id']
+        client.chat_postEphemeral(
+            channel=command['channel_id'],
+            user=command['user_id'],
+            text=f"❌ Failed to fetch projects: {str(e)}"
         )
 
 
@@ -529,19 +804,25 @@ Required scope:
 
 
 @app.command("/devlake-requirements")
-def show_requirements(ack, say, command):
+def show_requirements(ack, client, command):
     """Show GitHub/GitLab token requirements."""
     ack()
-    say(get_requirements_text(), channel=command['user_id'])
+    client.chat_postEphemeral(
+        channel=command['channel_id'],
+        user=command['user_id'],
+        text=get_requirements_text()
+    )
 
 
 @app.command("/devlake-help")
-def show_help(ack, say, command):
+def show_help(ack, client, command):
     """Show help message with available commands."""
     ack()
-
-    help_text = get_help_text()
-    say(help_text, channel=command['user_id'])
+    client.chat_postEphemeral(
+        channel=command['channel_id'],
+        user=command['user_id'],
+        text=get_help_text()
+    )
 
 
 def get_help_text():
@@ -552,8 +833,13 @@ def get_help_text():
 *Slash Commands:*
 
 `/devlake-create-project`
-Create a new DevLake project with GitHub integration.
-Opens a modal to collect project details, repository, and GitHub token.
+Create a brand new DevLake project with new connections.
+Supports GitHub and/or GitLab repositories.
+💡 *Tip:* Use an existing project name to add a new connection (e.g., add GitLab to a GitHub-only project).
+
+`/devlake-add-repos`
+Add more repositories/projects to an existing connection.
+Select a connection and provide repos to add.
 
 `/devlake-requirements`
 Show GitHub/GitLab token requirements and how to create PATs.
@@ -590,19 +876,28 @@ For issues or questions, contact the FTPR team.
 # Message event handlers for natural conversation
 
 @app.event("app_mention")
-def handle_mention(event, say):
+def handle_mention(event, client):
     """Handle when bot is mentioned in a channel."""
     text = event.get('text', '').lower()
     user = event.get('user')
+    channel = event.get('channel')
 
     logger.info(f"Bot mentioned by {user}: {text}")
 
     # Parse what the user wants
     if 'requirement' in text or ('token' in text and 'help' not in text) or 'pat' in text or 'scope' in text:
-        # Show requirements
-        say(get_requirements_text())
+        # Show requirements (ephemeral)
+        client.chat_postEphemeral(
+            channel=channel,
+            user=user,
+            text=get_requirements_text()
+        )
     elif 'help' in text:
-        say(get_help_text())
+        client.chat_postEphemeral(
+            channel=channel,
+            user=user,
+            text=get_help_text()
+        )
     elif 'list' in text and 'all' in text:
         # Simulate the list-all command
         try:
@@ -626,29 +921,44 @@ def handle_mention(event, say):
             else:
                 msg = "No projects found."
 
-            say(msg)
+            client.chat_postEphemeral(
+                channel=channel,
+                user=user,
+                text=msg
+            )
         except DevLakeAPIError as e:
-            say(f"❌ Failed to fetch projects: {str(e)}")
+            client.chat_postEphemeral(
+                channel=channel,
+                user=user,
+                text=f"❌ Failed to fetch projects: {str(e)}"
+            )
     elif 'list' in text or 'projects' in text:
         # Use the paginated list with buttons
         try:
-            channel = event.get('channel')
-            send_project_list(say, channel, page=1)
+            send_project_list(client, channel, user, page=1)
         except DevLakeAPIError as e:
-            say(f"❌ Failed to fetch projects: {str(e)}")
+            client.chat_postEphemeral(
+                channel=channel,
+                user=user,
+                text=f"❌ Failed to fetch projects: {str(e)}"
+            )
     elif 'create' in text or 'new project' in text:
-        say(
-            "To create a new project, use the `/devlake-create-project` command!\n"
-            "It will open a form where you can enter project details."
+        client.chat_postEphemeral(
+            channel=channel,
+            user=user,
+            text="To create a new project, use the `/devlake-create-project` command!\n"
+                 "It will open a form where you can enter project details."
         )
     else:
-        say(
-            f"Hey <@{user}>! 👋\n\n"
-            "I can help you manage DevLake projects!\n\n"
-            "Try:\n"
-            "• `@DevLake list projects`\n"
-            "• `@DevLake help`\n"
-            "• Or use `/devlake-help` to see all commands"
+        client.chat_postEphemeral(
+            channel=channel,
+            user=user,
+            text=f"Hey <@{user}>! 👋\n\n"
+                 "I can help you manage DevLake projects!\n\n"
+                 "Try:\n"
+                 "• `@DevLake list projects`\n"
+                 "• `@DevLake help`\n"
+                 "• Or use `/devlake-help` to see all commands"
         )
 
 
