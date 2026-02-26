@@ -359,6 +359,12 @@ def handle_create_project(ack, body, client, view):
 
         # Tokens are now out of scope and will be garbage collected
 
+        # Invalidate cache since we created new connections/project
+        global _cache
+        with _cache_lock:
+            _cache['timestamp'] = 0
+        logger.info("Cache invalidated after creating new project/connections")
+
         # Build repo list for success message
         repo_list = []
         if github_repos:
@@ -870,7 +876,9 @@ def refresh_cache(ack, client, command):
     client.chat_postEphemeral(
         channel=command['channel_id'],
         user=command['user_id'],
-        text="🔄 Cache invalidated. Next command will fetch fresh data from DevLake."
+        text="🔄 Cache invalidated. Next command will fetch fresh data from DevLake.\n\n"
+             "💡 *Note:* Cache is automatically refreshed when you create projects using this bot, "
+             "but use this command if you created connections/projects manually in the DevLake UI."
     )
 
 
@@ -912,7 +920,8 @@ List existing DevLake projects (shows 10 per page with "Show More" button).
 List all DevLake projects at once (may be slow if many projects).
 
 `/devlake-refresh-cache`
-Refresh the connections/projects cache (use after creating new connections).
+Manually refresh the connections/projects cache.
+💡 Cache auto-refreshes when creating projects via bot. Use this if you created connections manually in DevLake UI.
 
 `/devlake-help`
 Show this help message.
