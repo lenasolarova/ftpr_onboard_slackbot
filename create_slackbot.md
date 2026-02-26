@@ -59,26 +59,33 @@ Usage Hint: (opens a modal)
 
 **Command 2:**
 ```
+Command: /devlake-add-repos
+Short Description: Add repos to an existing connection
+Usage Hint: (opens a modal)
+```
+
+**Command 3:**
+```
 Command: /devlake-list-projects
 Short Description: List DevLake projects with pagination
 Usage Hint: (shows 10 per page with buttons)
 ```
 
-**Command 3:**
+**Command 4:**
 ```
 Command: /devlake-list-all
 Short Description: List all DevLake projects
 Usage Hint: (may be slow if many projects)
 ```
 
-**Command 4:**
+**Command 5:**
 ```
 Command: /devlake-requirements
 Short Description: Show GitHub/GitLab token requirements
 Usage Hint: (displays required PAT scopes)
 ```
 
-**Command 5:**
+**Command 6:**
 ```
 Command: /devlake-help
 Short Description: Show help and available commands

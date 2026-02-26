@@ -18,6 +18,8 @@ import logging
 import os
 import re
 import ssl
+import time
+from threading import Lock
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -81,6 +83,55 @@ devlake = DevLakeAPI(
     base_url=CONF['default'].get("DEVLAKE_URL"),
     api_token=CONF['default'].get("DEVLAKE_API_TOKEN")
 )
+
+# Cache for connections and projects (to avoid slow API calls on every modal open)
+_cache = {
+    'github_connections': None,
+    'gitlab_connections': None,
+    'projects': None,
+    'timestamp': 0
+}
+_cache_lock = Lock()
+CACHE_TTL = 300  # 5 minutes
+
+
+def get_cached_devlake_data():
+    """Get connections and projects with caching to stay within Slack's 3s trigger_id window."""
+    global _cache
+
+    with _cache_lock:
+        now = time.time()
+
+        # Return cached data if still fresh
+        if now - _cache['timestamp'] < CACHE_TTL and all([
+            _cache['github_connections'] is not None,
+            _cache['gitlab_connections'] is not None,
+            _cache['projects'] is not None
+        ]):
+            logger.debug(f"Using cached DevLake data (age: {now - _cache['timestamp']:.1f}s)")
+            return (_cache['github_connections'], _cache['gitlab_connections'], _cache['projects'])
+
+    # Cache miss or expired - fetch fresh data in parallel
+    logger.info("Fetching fresh DevLake data (cache miss or expired)")
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        f_github = executor.submit(devlake.get_connections, plugin="github")
+        f_gitlab = executor.submit(devlake.get_connections, plugin="gitlab")
+        f_projects = executor.submit(devlake.get_projects, page_size=100)
+
+        github_conns = f_github.result()
+        gitlab_conns = f_gitlab.result()
+        projects = f_projects.result()
+
+    # Update cache
+    with _cache_lock:
+        _cache['github_connections'] = github_conns
+        _cache['gitlab_connections'] = gitlab_conns
+        _cache['projects'] = projects
+        _cache['timestamp'] = time.time()
+
+    return (github_conns, gitlab_conns, projects)
 
 
 # Cron schedule options
@@ -353,16 +404,9 @@ def open_add_repos_modal(ack, body, client):
     """Open modal to add repos/projects to an existing connection."""
     ack()
 
-    # Fetch connections and projects in parallel to stay within Slack's 3s trigger_id window
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # Use cached data to stay within Slack's 3s trigger_id window
     try:
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            f_github = executor.submit(devlake.get_connections, plugin="github")
-            f_gitlab = executor.submit(devlake.get_connections, plugin="gitlab")
-            f_projects = executor.submit(devlake.get_projects, page_size=100)
-            github_conns = f_github.result()
-            gitlab_conns = f_gitlab.result()
-            projects = f_projects.result()
+        github_conns, gitlab_conns, projects = get_cached_devlake_data()
     except Exception as e:
         logger.error(f"Failed to fetch connections/projects: {e}")
         client.chat_postEphemeral(
@@ -814,6 +858,22 @@ def show_requirements(ack, client, command):
     )
 
 
+@app.command("/devlake-refresh-cache")
+def refresh_cache(ack, client, command):
+    """Manually refresh the connections and projects cache."""
+    ack()
+
+    global _cache
+    with _cache_lock:
+        _cache['timestamp'] = 0  # Invalidate cache
+
+    client.chat_postEphemeral(
+        channel=command['channel_id'],
+        user=command['user_id'],
+        text="🔄 Cache invalidated. Next command will fetch fresh data from DevLake."
+    )
+
+
 @app.command("/devlake-help")
 def show_help(ack, client, command):
     """Show help message with available commands."""
@@ -850,6 +910,9 @@ List existing DevLake projects (shows 10 per page with "Show More" button).
 
 `/devlake-list-all`
 List all DevLake projects at once (may be slow if many projects).
+
+`/devlake-refresh-cache`
+Refresh the connections/projects cache (use after creating new connections).
 
 `/devlake-help`
 Show this help message.
@@ -1041,6 +1104,14 @@ def main():
     """Start the Slack bot."""
     logger.info("Starting FTPR Slack Bot...")
     logger.info(f"DevLake URL: {CONF['default'].get('DEVLAKE_URL')}")
+
+    # Pre-warm cache to avoid slow first modal open
+    logger.info("Pre-warming DevLake data cache...")
+    try:
+        get_cached_devlake_data()
+        logger.info("✓ Cache pre-warmed successfully")
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm cache (will retry on first use): {e}")
 
     handler = SocketModeHandler(app, CONF['default'].get("SLACK_APP_TOKEN"))
     handler.start()

@@ -66,12 +66,18 @@ ftpr-slack-bot
 ### Slash Commands
 
 ```
-/devlake-create-project          # Opens modal to create project
-/devlake-requirements            # Shows GitHub/GitLab PAT requirements
-/devlake-list-projects           # Lists projects (10 per page with buttons)
-/devlake-list-all                # Lists all projects
-/devlake-help                    # Shows help
+/devlake-create-project          # Create new project with new connections
+/devlake-add-repos               # Add repos to existing connection
+/devlake-requirements            # Show GitHub/GitLab PAT requirements
+/devlake-list-projects           # List projects (10 per page with buttons)
+/devlake-list-all                # List all projects
+/devlake-help                    # Show help
 ```
+
+**Workflows:**
+1. **Start fresh**: `/devlake-create-project` - Creates project + connections from scratch
+2. **Add connection to existing project**: `/devlake-create-project` with existing project name - Adds new connection (e.g., add GitLab to GitHub-only project)
+3. **Add more repos**: `/devlake-add-repos` - Adds repos to an existing connection
 
 ### Natural Chat
 
